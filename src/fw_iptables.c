@@ -1084,6 +1084,11 @@ iptables_fw_counters_update(void)
         debug(LOG_ERR, "popen(): %s", strerror(errno));
         return -1;
     }
+	
+	// liudf added 20160216
+	LOCK_CONFIG();
+	reset_client_list();
+	UNLOCK_CONFIG();
 
     /* skip the first two lines */
     while (('\n' != fgetc(output)) && !feof(output)) ;
@@ -1106,7 +1111,8 @@ iptables_fw_counters_update(void)
                     p1->counters.last_updated = time(NULL);
                     debug(LOG_DEBUG, "%s - Outgoing traffic %llu bytes, updated counter.outgoing to %llu bytes.  Updated last_updated to %d", ip,
                           counter, p1->counters.outgoing, p1->counters.last_updated);
-                }
+					p1->is_online = 1;
+                } 
 				
 				// liudf added 20160127
 				// get client name	

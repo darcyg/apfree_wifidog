@@ -135,6 +135,7 @@ authenticate_client(request * r)
 	// liudf 20160115
 	// for support weixin lian
 	int type = 0;
+	t_offline_client *o_client = NULL;
 
     LOCK_CLIENT_LIST();
 
@@ -241,15 +242,23 @@ authenticate_client(request * r)
     	UNLOCK_CLIENT_LIST();
 		//>>> liudf added 20160112
 		client->first_login = time(NULL);
+		client->is_online = 1;
+		LOCK_OFFLINE_CLIENT_LIST();
+		o_client = offline_client_list_find_by_mac(client->mac);	
+		if(o_client)
+			offline_client_list_delete(o_client);
+		UNLOCK_OFFLINE_CLIENT_LIST();
 		//<<< liudf added end
         served_this_session++;
 		if(type) {
         	send_http_page(r, "weixin auth", "Weixin auth come here");
 		} else {
-        	safe_asprintf(&urlFragment, "%sgw_id=%s&channel_path=%s", 
+        	safe_asprintf(&urlFragment, "%sgw_id=%s&channel_path=%s&mac=%s&name=%s", 
 				auth_server->authserv_portal_script_path_fragment, 
 				config->gw_id,
-				g_channel_path?g_channel_path:"null");
+				g_channel_path?g_channel_path:"null",
+				client->mac?client->mac:"null",
+				client->name?client->name:"null");
         	http_send_redirect_to_auth(r, urlFragment, "Redirect to portal");
         	free(urlFragment);
 		}

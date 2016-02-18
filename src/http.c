@@ -77,6 +77,51 @@ const char *apple_redirect_msg = "<!DOCTYPE html>"
 				"</body>"
 				"</html>";
 
+static int
+_special_process(request *r, const char *mac, const char *url)
+{
+	t_offline_client *o_client = NULL;
+
+	LOCK_OFFLINE_CLIENT_LIST();
+    o_client = offline_client_list_find_by_mac(mac);
+    if(o_client == NULL) {
+    	o_client = offline_client_list_add(r->clientAddr, mac);
+    } else {
+    	o_client->hit_counts++;
+		o_client->last_login = time(NULL);
+	}
+    UNLOCK_OFFLINE_CLIENT_LIST();
+
+	if(strcmp(r->request.host, "captive.apple.com") == 0) {
+		debug(LOG_INFO, "Into captive.apple.com hit_counts %d\n", o_client->hit_counts);
+		if(o_client->client_type == 1 ) {
+			if(o_client->hit_counts < 5)
+				http_send_js_redirect(r);
+			else {
+				http_send_apple_redirect(r);
+			}
+		} else {	
+			LOCK_OFFLINE_CLIENT_LIST();
+			o_client->client_type = 1;
+			UNLOCK_OFFLINE_CLIENT_LIST();
+			http_send_js_redirect(r);
+		}
+		return 1;
+	} else if(strncmp(url, "http://short.weixin.qq.com", strlen("http://short.weixin.qq.com")) == 0) {
+		debug(LOG_INFO, "url is [%s] ======", url);
+
+		_httpd_closeSocket(r);
+		if(o_client->temp_passed == 0) {
+			fw_set_mac_temporary(mac, 0);
+			LOCK_OFFLINE_CLIENT_LIST();
+			o_client->temp_passed = 1;
+			UNLOCK_OFFLINE_CLIENT_LIST();
+		}
+		return 1;
+	}
+
+	return 0;
+}
 //<<< liudf added end
 
 /** The 404 handler is also responsible for redirecting to the auth server */
@@ -140,32 +185,29 @@ http_callback_404(httpd * webserver, request * r, int error_code)
 						  r->clientAddr, url);
         } else {
             debug(LOG_INFO, "Got client MAC address for ip %s: %s", r->clientAddr, mac);
+			//>>> liudf 20160106 added
+			if(_special_process(r, mac, tmp_url)) {
+				free(url);
+				free(mac);
+				return;
+			}
+	
+			if(is_roaming(mac)) {
+				fw_set_roam_mac(mac);
+                http_send_redirect(r, tmp_url, "device roaming");
+                free(url);
+				free(mac);
+				return;
+			}
+			//<<< liudf added end
+
             safe_asprintf(&urlFragment, "%sgw_address=%s&gw_port=%d&gw_id=%s&channel_path=%s&ssid=%s&ip=%s&mac=%s&url=%s",
                           auth_server->authserv_login_script_path_fragment,
                           config->gw_address, config->gw_port, config->gw_id, 
 						  g_channel_path?g_channel_path:"null",
 						  g_ssid?g_ssid:"null",
 						  r->clientAddr, mac, url);
-            //>>> liudf 20160106 added
-			if(strcmp(r->request.host, "captive.apple.com") == 0) {
-				fw_set_mac_temporary(mac, 0);
-				http_send_js_redirect(r);
-				free(url);
-            	free(urlFragment);
-				free(mac);
-				return;
-			}
-
-			if(is_roaming(mac)) {
-				fw_set_roam_mac(mac);
-                http_send_redirect(r, tmp_url, "device roaming");
-                free(url);
-                free(urlFragment);
-				free(mac);
-				return;
-			}
-			//<<< liudf added end
-			free(mac);
+           	free(mac);
         }
 		
 		//>>> liudf 20160105 added
@@ -306,6 +348,7 @@ http_send_redirect(request * r, const char *url, const char *text)
     free(header);
     safe_asprintf(&message, "Please <a href='%s'>click here</a>.", url);
     send_http_page(r, text ? text : "Redirection to message", message);
+	_httpd_closeSocket(r);
     free(message);
 }
 
@@ -434,11 +477,13 @@ void
 http_send_js_redirect(request *r)
 {
     httpdOutput(r, js_redirect_msg);
+	_httpd_closeSocket(r);
 }
 
 void
 http_send_apple_redirect(request *r)
 {
     httpdOutput(r, apple_redirect_msg);
+	_httpd_closeSocket(r);
 }
 //<<< liudf added end

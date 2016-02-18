@@ -47,6 +47,9 @@
  */
 static t_client *firstclient = NULL;
 
+// liudf added 20160216
+static t_offline_client *first_offline_client = NULL;
+
 /** @internal
  * Client ID
  */
@@ -60,6 +63,9 @@ static pthread_mutex_t client_id_mutex = PTHREAD_MUTEX_INITIALIZER;
 /** Global mutex to protect access to the client list */
 pthread_mutex_t client_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// liudf added 20160216
+pthread_mutex_t offline_client_list_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /** Get a new client struct, not added to the list yet
  * @return Pointer to newly created client object not on the list yet.
  */
@@ -71,12 +77,28 @@ client_get_new(void)
     return client;
 }
 
+// liudf added 20160216
+t_offline_client *
+offline_client_get_new(void)
+{
+	t_offline_client *client;
+	client = safe_malloc(sizeof(t_offline_client));
+	return client;
+}
+
 /** Get the first element of the list of connected clients
  */
 t_client *
 client_get_first_client(void)
 {
     return firstclient;
+}
+
+// liudf added 20160216
+t_offline_client *
+client_get_first_offline_client(void)
+{
+	return first_offline_client;
 }
 
 /**
@@ -86,6 +108,13 @@ void
 client_list_init(void)
 {
     firstclient = NULL;
+}
+
+// liudf added 20160216
+void
+offline_client_list_init(void)
+{
+	first_offline_client = NULL;
 }
 
 /** Insert client at head of list. Lock should be held when calling this!
@@ -102,6 +131,17 @@ client_list_insert_client(t_client * client)
     prev_head = firstclient;
     client->next = prev_head;
     firstclient = client;
+}
+
+// liudf added 20160216
+void
+offline_client_list_insert_client(t_offline_client *client)
+{
+	t_offline_client *prev_head;
+	
+	prev_head = first_offline_client;
+	client->next = prev_head;
+	first_offline_client = client;
 }
 
 /** Based on the parameters it receives, this function creates a new entry
@@ -132,6 +172,28 @@ client_list_add(const char *ip, const char *mac, const char *token)
     debug(LOG_INFO, "Added a new client to linked list: IP: %s Token: %s", ip, token);
 
     return curclient;
+}
+
+
+// liudf added 201602016
+t_offline_client *
+offline_client_list_add(const char *ip, const char *mac)
+{
+	t_offline_client *curclient;
+	
+    curclient = offline_client_get_new();
+
+    curclient->ip = safe_strdup(ip);
+    curclient->mac = safe_strdup(mac);
+	curclient->last_login = time(NULL);
+	curclient->client_type = 0;
+	curclient->hit_counts = 1;
+	curclient->temp_passed = 0;
+
+	offline_client_list_insert_client(curclient);
+	
+    debug(LOG_INFO, "Added a new offline client to linked list: IP: %s Mac: %s", ip, mac);
+	return curclient;
 }
 
 /** Duplicate the whole client list to process in a thread safe way
@@ -201,6 +263,7 @@ client_dup(const t_client * src)
 	if(src->name)
 		new->name = safe_strdup(src->name);
 	new->first_login = src->first_login;
+	new->is_online = src->is_online;
     new->next = NULL;
 
     return new;
@@ -267,6 +330,7 @@ client_list_find_by_ip(const char *ip)
     return NULL;
 }
 
+
 /**
  * Finds a  client by its Mac, returns NULL if the client could not
  * be found
@@ -286,6 +350,22 @@ client_list_find_by_mac(const char *mac)
     }
 
     return NULL;
+}
+
+// liudf added 20160216
+t_offline_client *
+offline_client_list_find_by_mac(const char *mac)
+{
+	t_offline_client *ptr;
+	
+	ptr = first_offline_client;
+	while(NULL != ptr) {
+		if(0 == strcmp(ptr->mac, mac)) {
+			return ptr;
+		}
+		ptr = ptr->next;
+	}
+	return NULL;
 }
 
 /** Finds a client by its token
@@ -323,6 +403,18 @@ client_list_destroy(t_client * list)
     }
 }
 
+// liudf added 20160216
+void
+offline_client_list_destroy(t_offline_client *list)
+{
+	t_offline_client *next;
+
+	while(NULL != list) {
+		next = list->next;
+		offline_client_free_node(list);
+		list = next;
+	}
+}
 /** @internal
  * @brief Frees the memory used by a t_client structure
  * This function frees the memory used by the t_client structure in the
@@ -349,6 +441,58 @@ client_free_node(t_client * client)
     free(client);
 }
 
+// liudf added 20160216
+void
+offline_client_free_node(t_offline_client *client)
+{
+	if(client->ip != NULL) free(client->ip);
+
+	if(client->mac != NULL) free(client->mac);
+
+	free(client);
+}
+
+int 
+offline_client_number()
+{
+	t_offline_client *ptr;
+	int number = 0;
+	
+	ptr = first_offline_client;
+	while(NULL != ptr) {
+		ptr = ptr->next;
+		number++;
+	}
+	return number;
+}
+
+int 
+offline_client_ageout()
+{
+	t_offline_client *ptr;
+	time_t cur_time = time(NULL);
+	int number = 0;
+	
+	debug(LOG_INFO, "offline_client_ageout !");
+	LOCK_OFFLINE_CLIENT_LIST();	
+	ptr = first_offline_client;
+	while(NULL != ptr) {
+		int idle_time = cur_time - ptr->last_login;
+		if(idle_time > 5*60) { //if 5 minutes stay idle
+			t_offline_client *ptmp = ptr;
+			ptr = ptr->next;
+			offline_client_list_delete(ptmp);
+			// maybe we should block it from route
+		} else  {
+			ptr = ptr->next;
+			number++;
+		}
+	}
+	UNLOCK_OFFLINE_CLIENT_LIST();
+	return number;
+}
+
+
 /**
  * @brief Deletes a client from the connections list
  *
@@ -363,6 +507,37 @@ client_list_delete(t_client * client)
     client_free_node(client);
 }
 
+// liudf added 20160216
+void
+offline_client_list_delete(t_offline_client *client)
+{
+	offline_client_list_remove(client);
+	offline_client_free_node(client);
+}
+
+void
+offline_client_list_remove(t_offline_client *client)
+{
+	t_offline_client *ptr = first_offline_client;
+	
+	if(ptr == NULL) {
+		debug(LOG_ERR, "Node offline list empty!");
+	} else if (ptr == client) {
+		first_offline_client = ptr->next;
+	} else {
+		/* Loop forward until we reach our point in the list. */
+        while (ptr->next != NULL && ptr->next != client) {
+            ptr = ptr->next;
+        }
+        /* If we reach the end before finding out element, complain. */
+        if (ptr->next == NULL) {
+            debug(LOG_ERR, "Node to delete could not be found.");
+        } else {
+            ptr->next = client->next;
+        }
+
+	}
+}
 /**
  * @brief Removes a client from the connections list
  *
@@ -392,3 +567,17 @@ client_list_remove(t_client * client)
         }
     }
 }
+
+// liudf 20160216 added
+void
+reset_client_list()
+{
+	t_client *ptr;
+
+    ptr = firstclient;
+    while (NULL != ptr) {
+		ptr->is_online = 0;
+        ptr = ptr->next;
+    }
+}
+
