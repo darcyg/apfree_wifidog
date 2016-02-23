@@ -58,6 +58,12 @@
 #include "../config.h"
 
 //>>> liudf added 20160104
+const char *apple_domains[] = {
+					"captive.apple.com",
+					"www.apple.com",
+					NULL
+};
+
 const char *js_redirect_msg = "<!DOCTYPE html>"
 				"<html>"
 				"<script type=\"text/javascript\">"
@@ -78,6 +84,19 @@ const char *apple_redirect_msg = "<!DOCTYPE html>"
 				"</html>";
 
 static int
+_is_apple_captive(const char *domain)
+{
+	int i = 0;
+	while(apple_domains[i] != NULL) {
+		if(strcmp(domain, apple_domains[i]) == 0)
+			return 1;
+		i++;
+	}
+
+	return 0;
+}
+
+static int
 _special_process(request *r, const char *mac, const char *url)
 {
 	t_offline_client *o_client = NULL;
@@ -87,15 +106,18 @@ _special_process(request *r, const char *mac, const char *url)
     if(o_client == NULL) {
     	o_client = offline_client_list_add(r->clientAddr, mac);
     } else {
-    	o_client->hit_counts++;
 		o_client->last_login = time(NULL);
 	}
     UNLOCK_OFFLINE_CLIENT_LIST();
 
-	if(strcmp(r->request.host, "captive.apple.com") == 0) {
-		debug(LOG_INFO, "Into captive.apple.com hit_counts %d\n", o_client->hit_counts);
+	if(_is_apple_captive(r->request.host)) {
+		unsigned int interval = time(NULL) - o_client->first_login;
+		debug(LOG_INFO, "Into captive.apple.com hit_counts %d interval %d\n", o_client->hit_counts, interval);
+		LOCK_OFFLINE_CLIENT_LIST();
+    	o_client->hit_counts++;
+		UNLOCK_OFFLINE_CLIENT_LIST();
 		if(o_client->client_type == 1 ) {
-			if(o_client->hit_counts < 5)
+			if(o_client->hit_counts < 5 && interval < 30 )
 				http_send_js_redirect(r);
 			else {
 				http_send_apple_redirect(r);
@@ -107,7 +129,9 @@ _special_process(request *r, const char *mac, const char *url)
 			http_send_js_redirect(r);
 		}
 		return 1;
-	} else if(strncmp(url, "http://short.weixin.qq.com", strlen("http://short.weixin.qq.com")) == 0) {
+	} 
+	/*
+	else if(strncmp(url, "http://short.weixin.qq.com", strlen("http://short.weixin.qq.com")) == 0) {
 		debug(LOG_INFO, "url is [%s] ======", url);
 
 		_httpd_closeSocket(r);
@@ -119,7 +143,7 @@ _special_process(request *r, const char *mac, const char *url)
 		}
 		return 1;
 	}
-
+	*/
 	return 0;
 }
 //<<< liudf added end
